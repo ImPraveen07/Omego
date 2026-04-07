@@ -1,38 +1,68 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Firebase Video Call</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Auragram Video Chat</title>
     <style>
-        body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; background: #f0f2f5; }
-        video { width: 300px; height: 225px; background: #222; margin: 10px; border-radius: 8px; }
-        .controls { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
-        button { padding: 10px 15px; cursor: pointer; border-radius: 5px; border: none; background: #007bff; color: white; margin: 5px; }
-        button:disabled { background: #ccc; }
-        input { padding: 10px; border: 1px solid #ddd; border-radius: 5px; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #121212; color: white; margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; }
+        
+        .section { display: none; width: 100%; max-width: 600px; text-align: center; }
+        .active { display: block; }
+        
+        input { padding: 10px; font-size: 16px; border-radius: 5px; border: none; outline: none; width: 80%; margin-bottom: 15px; }
+        button { padding: 10px 20px; font-size: 16px; border: none; border-radius: 5px; cursor: pointer; background: #00e5ff; color: #000; font-weight: bold; transition: 0.2s; }
+        button:hover { background: #00b8cc; }
+        .danger-btn { background: #ff4757; color: white; }
+        .danger-btn:hover { background: #ff2a3d; }
+        
+        .user-card { background: #222; padding: 15px; margin: 10px 0; border-radius: 8px; display: flex; justify-content: space-between; align-items: center; }
+        
+        #incomingCallPopup { display: none; position: fixed; top: 20px; left: 50%; transform: translateX(-50%); background: #2ed573; padding: 20px; border-radius: 10px; z-index: 100; box-shadow: 0 4px 15px rgba(0,0,0,0.5); width: 300px; text-align: center; color: black; }
+        
+        .video-container { display: flex; flex-direction: column; gap: 15px; align-items: center; margin-top: 20px; }
+        video { width: 100%; max-width: 500px; background: #222; border-radius: 12px; object-fit: cover; }
+        #localVideo { transform: scaleX(-1); } 
+        .status { color: #ffeb3b; margin-top: 10px; font-weight: bold; }
     </style>
 </head>
 <body>
 
-    <h2>Video Chat</h2>
-
-    <div>
-        <video id="webcamVideo" autoplay playsinline muted></video>
-        <video id="remoteVideo" autoplay playsinline></video>
+    <div id="loginSection" class="section active">
+        <h2>Welcome to Auragram Video</h2>
+        <input type="text" id="usernameInput" placeholder="Enter your username...">
+        <br>
+        <button onclick="login()">Enter App</button>
     </div>
 
-    <div class="controls">
-        <button id="webcamButton">1. Enable Camera & Mic</button>
-        <hr>
-        <button id="callButton" disabled>2. Create Call (Generate ID)</button>
-        <input id="callInput" readonly placeholder="Your Code">
-        <hr>
-        <input id="joinInput" placeholder="Enter Friend's Code">
-        <button id="answerButton" disabled>3. Join Call</button>
+    <div id="directorySection" class="section">
+        <h2>Active Users</h2>
+        <p>Logged in as: <span id="myUsernameDisplay" style="color: #00e5ff;"></span></p>
+        <div id="userList"></div>
+    </div>
+
+    <div id="incomingCallPopup">
+        <h3 style="margin-top:0;">Incoming Call!</h3>
+        <p id="callerNameDisplay">Someone is calling...</p>
+        <button onclick="acceptCall()">Accept</button>
+        <button class="danger-btn" onclick="rejectCall()">Reject</button>
+    </div>
+
+    <div id="videoSection" class="section">
+        <h2>Live Call</h2>
+        <div class="status" id="callStatus">Connecting...</div>
+        
+        <div class="video-container">
+            <video id="remoteVideo" autoplay playsinline></video>
+            <video id="localVideo" autoplay playsinline muted></video>
+        </div>
+        <br>
+        <button class="danger-btn" onclick="endCall()">End Call</button>
     </div>
 
     <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/9.6.1/firebase-app.js";
-        import { getFirestore, collection, doc, setDoc, onSnapshot, getDoc, updateDoc, addDoc } from "https://www.gstatic.com/firebasejs/9.6.1/firebase-firestore.js";
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+        import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection, addDoc, updateDoc, query, where, deleteDoc } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 
         const firebaseConfig = {
             apiKey: "AIzaSyAHjilh7jAlS0e5qDKxbDZq3nbe3pFe4nE",
@@ -44,99 +74,230 @@
         };
 
         const app = initializeApp(firebaseConfig);
-        const firestore = getFirestore(app);
+        const db = getFirestore(app);
 
         const servers = {
-            iceServers: [{ urls: ['stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302'] }],
-            iceCandidatePoolSize: 10,
+            iceServers: [{ urls: ['stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302'] }]
         };
 
-        const pc = new RTCPeerConnection(servers);
+        let myUsername = "";
+        let pc = null;
         let localStream = null;
-        let remoteStream = null;
+        let currentCallDocId = null;
+        let callListener = null;
 
-        const webcamButton = document.getElementById('webcamButton');
-        const webcamVideo = document.getElementById('webcamVideo');
-        const callButton = document.getElementById('callButton');
-        const callInput = document.getElementById('callInput');
-        const joinInput = document.getElementById('joinInput');
-        const answerButton = document.getElementById('answerButton');
-        const remoteVideo = document.getElementById('remoteVideo');
+        function showSection(id) {
+            document.querySelectorAll('.section').forEach(sec => sec.classList.remove('active'));
+            document.getElementById(id).classList.add('active');
+        }
 
-        // --- STEP 1: Enable Media ---
-        webcamButton.onclick = async () => {
-            try {
-                localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-                remoteStream = new MediaStream();
-
-                localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
-                pc.ontrack = (event) => event.streams[0].getTracks().forEach((track) => remoteStream.addTrack(track));
-
-                webcamVideo.srcObject = localStream;
-                remoteVideo.srcObject = remoteStream;
-
-                callButton.disabled = false;
-                answerButton.disabled = false;
-                webcamButton.disabled = true;
-            } catch (e) {
-                console.error("Error accessing media devices.", e);
-                alert("Could not access camera/mic. Make sure you are on HTTPS!");
-            }
+        // --- LOGIN ---
+        window.login = async function() {
+            const input = document.getElementById('usernameInput').value.trim();
+            if (!input) return alert("Please enter a username!");
+            
+            myUsername = input;
+            document.getElementById('myUsernameDisplay').innerText = myUsername;
+            
+            await setDoc(doc(db, "users", myUsername), { online: true, timestamp: Date.now() });
+            
+            showSection('directorySection');
+            listenForUsers();
+            listenForIncomingCalls();
         };
 
-        // --- STEP 2: Create Call ---
-        callButton.onclick = async () => {
-            const callDoc = doc(collection(firestore, 'calls'));
-            const offerCandidates = collection(callDoc, 'offerCandidates');
-            const answerCandidates = collection(callDoc, 'answerCandidates');
+        // --- USER DIRECTORY ---
+        function listenForUsers() {
+            const q = query(collection(db, "users"), where("online", "==", true));
+            onSnapshot(q, (snapshot) => {
+                const userList = document.getElementById('userList');
+                userList.innerHTML = ""; 
+                
+                snapshot.forEach((doc) => {
+                    const user = doc.id;
+                    if (user !== myUsername) {
+                        userList.innerHTML += `
+                            <div class="user-card">
+                                <span>${user}</span>
+                                <button onclick="startCall('${user}')">Call</button>
+                            </div>
+                        `;
+                    }
+                });
+            });
+        }
 
-            callInput.value = callDoc.id; // The random code
+        // --- INCOMING CALL LISTENER ---
+        function listenForIncomingCalls() {
+            const q = query(collection(db, "calls"), where("callee", "==", myUsername));
+            
+            onSnapshot(q, (snapshot) => {
+                snapshot.docChanges().forEach((change) => {
+                    const callData = change.doc.data();
+                    
+                    if (change.type === "added" && callData.status === "calling") {
+                        currentCallDocId = change.doc.id;
+                        document.getElementById('callerNameDisplay').innerText = callData.caller + " is calling!";
+                        document.getElementById('incomingCallPopup').style.display = "block";
+                    }
+                    
+                    if (change.type === "modified" && callData.status === "ended") {
+                        document.getElementById('incomingCallPopup').style.display = "none";
+                        if(pc) endCall();
+                    }
+                    
+                    if (change.type === "removed") {
+                        document.getElementById('incomingCallPopup').style.display = "none";
+                        if(pc) endCall();
+                    }
+                });
+            });
+        }
+
+        // --- WEBRTC SETUP (FIXED BLACK SCREEN) ---
+        async function setupWebRTC() {
+            pc = new RTCPeerConnection(servers);
+
+            // Create a dedicated stream for the remote video
+            const remoteStream = new MediaStream();
+            const remoteVideo = document.getElementById('remoteVideo');
+            remoteVideo.srcObject = remoteStream;
+
+            localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+            document.getElementById('localVideo').srcObject = localStream;
+            localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+
+            // Safely push tracks to the video element and FORCE it to play
+            pc.ontrack = (event) => {
+                event.streams[0].getTracks().forEach(track => {
+                    remoteStream.addTrack(track);
+                });
+                // Force playback for strict mobile browsers
+                remoteVideo.play().catch(e => console.error("Video play blocked:", e));
+            };
+        }
+
+        // --- INITIATE CALL ---
+        window.startCall = async function(targetUser) {
+            showSection('videoSection');
+            document.getElementById('callStatus').innerText = "Ringing " + targetUser + "...";
+            
+            await setupWebRTC();
+
+            const callDocRef = doc(collection(db, "calls"));
+            currentCallDocId = callDocRef.id;
 
             pc.onicecandidate = (event) => {
-                event.candidate && addDoc(offerCandidates, event.candidate.toJSON());
+                if (event.candidate) addDoc(collection(callDocRef, 'callerCandidates'), event.candidate.toJSON());
             };
 
             const offerDescription = await pc.createOffer();
             await pc.setLocalDescription(offerDescription);
-            await setDoc(callDoc, { offer: { sdp: offerDescription.sdp, type: offerDescription.type } });
 
-            onSnapshot(callDoc, (snapshot) => {
-                const data = snapshot.data();
-                if (!pc.currentRemoteDescription && data?.answer) {
-                    pc.setRemoteDescription(new RTCSessionDescription(data.answer));
-                }
+            await setDoc(callDocRef, {
+                caller: myUsername,
+                callee: targetUser,
+                status: "calling",
+                offer: { sdp: offerDescription.sdp, type: offerDescription.type }
             });
 
-            onSnapshot(answerCandidates, (snapshot) => {
-                snapshot.docChanges().forEach((change) => {
-                    if (change.type === 'added') pc.addIceCandidate(new RTCIceCandidate(change.doc.data()));
-                });
+            callListener = onSnapshot(callDocRef, async (snapshot) => {
+                const data = snapshot.data();
+                if (!data) return;
+                
+                if (data.status === "rejected") {
+                    alert(targetUser + " declined the call.");
+                    endCall();
+                }
+                
+                if (!pc.currentRemoteDescription && data.answer) {
+                    await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+                    document.getElementById('callStatus').innerText = "Connected!";
+                    
+                    onSnapshot(collection(callDocRef, 'calleeCandidates'), (snapshot) => {
+                        snapshot.docChanges().forEach((change) => {
+                            if (change.type === 'added') {
+                                pc.addIceCandidate(new RTCIceCandidate(change.doc.data())).catch(e => console.error("ICE Error", e));
+                            }
+                        });
+                    });
+                }
             });
         };
 
-        // --- STEP 3: Join Call ---
-        answerButton.onclick = async () => {
-            const callId = joinInput.value;
-            const callDoc = doc(firestore, 'calls', callId);
-            const answerCandidates = collection(callDoc, 'answerCandidates');
-            const offerCandidates = collection(callDoc, 'offerCandidates');
+        // --- ACCEPT CALL ---
+        window.acceptCall = async function() {
+            document.getElementById('incomingCallPopup').style.display = "none";
+            showSection('videoSection');
+            document.getElementById('callStatus').innerText = "Connecting...";
 
+            await setupWebRTC();
+
+            const callDocRef = doc(db, "calls", currentCallDocId);
+            
             pc.onicecandidate = (event) => {
-                event.candidate && addDoc(answerCandidates, event.candidate.toJSON());
+                if (event.candidate) addDoc(collection(callDocRef, 'calleeCandidates'), event.candidate.toJSON());
             };
 
-            const callData = (await getDoc(callDoc)).data();
+            const callData = (await getDoc(callDocRef)).data();
+            
             await pc.setRemoteDescription(new RTCSessionDescription(callData.offer));
 
             const answerDescription = await pc.createAnswer();
             await pc.setLocalDescription(answerDescription);
-            await updateDoc(callDoc, { answer: { type: answerDescription.type, sdp: answerDescription.sdp } });
 
-            onSnapshot(offerCandidates, (snapshot) => {
+            await updateDoc(callDocRef, {
+                status: "accepted",
+                answer: { sdp: answerDescription.sdp, type: answerDescription.type }
+            });
+
+            onSnapshot(collection(callDocRef, 'callerCandidates'), (snapshot) => {
                 snapshot.docChanges().forEach((change) => {
-                    if (change.type === 'added') pc.addIceCandidate(new RTCIceCandidate(change.doc.data()));
+                    if (change.type === 'added') {
+                        pc.addIceCandidate(new RTCIceCandidate(change.doc.data())).catch(e => console.error("ICE Error", e));
+                    }
                 });
             });
+
+            document.getElementById('callStatus').innerText = "Connected!";
+        };
+
+        // --- REJECT CALL ---
+        window.rejectCall = async function() {
+            document.getElementById('incomingCallPopup').style.display = "none";
+            if (currentCallDocId) await updateDoc(doc(db, "calls", currentCallDocId), { status: "rejected" });
+        };
+
+        // --- END CALL & DATABASE CLEANUP ---
+        window.endCall = async function() {
+            // 1. Stop the camera and microphone
+            if (pc) {
+                pc.close();
+                pc = null;
+            }
+            if (localStream) {
+                localStream.getTracks().forEach(track => track.stop());
+                localStream = null;
+            }
+            
+            // 2. Alert the other user and DELETE the data from Firestore
+            if (currentCallDocId) {
+                try {
+                    await updateDoc(doc(db, "calls", currentCallDocId), { status: "ended" });
+                    
+                    // The fix you asked for: Deleting the data to save storage/clean up
+                    setTimeout(async () => {
+                        await deleteDoc(doc(db, "calls", currentCallDocId));
+                    }, 2000); // Wait 2 seconds before deleting so the other person has time to read the "ended" status
+                } catch (error) {
+                    console.error("Error cleaning up database:", error);
+                }
+            }
+
+            if (callListener) callListener(); 
+            
+            showSection('directorySection'); 
+            document.getElementById('callStatus').innerText = "Connecting..."; 
         };
     </script>
 </body>
