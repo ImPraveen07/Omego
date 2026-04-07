@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Firebase Video Call</title>
+    <style>
+        body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; background: #f0f2f5; }
+        video { width: 300px; height: 225px; background: #222; margin: 10px; border-radius: 8px; }
+        .controls { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        button { padding: 10px 15px; cursor: pointer; border-radius: 5px; border: none; background: #007bff; color: white; margin: 5px; }
+        button:disabled { background: #ccc; }
+        input { padding: 10px; border: 1px solid #ddd; border-radius: 5px; }
+    </style>
+</head>
+<body>
+
+    <h2>Video Chat</h2>
+
+    <div>
+        <video id="webcamVideo" autoplay playsinline muted></video>
+        <video id="remoteVideo" autoplay playsinline></video>
+    </div>
+
+    <div class="controls">
+        <button id="webcamButton">1. Enable Camera & Mic</button>
+        <hr>
+        <button id="callButton" disabled>2. Create Call (Generate ID)</button>
+        <input id="callInput" readonly placeholder="Your Code">
+        <hr>
+        <input id="joinInput" placeholder="Enter Friend's Code">
+        <button id="answerButton" disabled>3. Join Call</button>
+    </div>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/9.6.1/firebase-app.js";
+        import { getFirestore, collection, doc, setDoc, onSnapshot, getDoc, updateDoc, addDoc } from "https://www.gstatic.com/firebasejs/9.6.1/firebase-firestore.js";
+
+        const firebaseConfig = {
+            apiKey: "AIzaSyAHjilh7jAlS0e5qDKxbDZq3nbe3pFe4nE",
+            authDomain: "instagram-e8c7a.firebaseapp.com",
+            projectId: "instagram-e8c7a",
+            storageBucket: "instagram-e8c7a.firebasestorage.app",
+            messagingSenderId: "270990839800",
+            appId: "1:270990839800:web:7f56ea2ea8d941219fd00d"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const firestore = getFirestore(app);
+
+        const servers = {
+            iceServers: [{ urls: ['stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302'] }],
+            iceCandidatePoolSize: 10,
+        };
+
+        const pc = new RTCPeerConnection(servers);
+        let localStream = null;
+        let remoteStream = null;
+
+        const webcamButton = document.getElementById('webcamButton');
+        const webcamVideo = document.getElementById('webcamVideo');
+        const callButton = document.getElementById('callButton');
+        const callInput = document.getElementById('callInput');
+        const joinInput = document.getElementById('joinInput');
+        const answerButton = document.getElementById('answerButton');
+        const remoteVideo = document.getElementById('remoteVideo');
+
+        // --- STEP 1: Enable Media ---
+        webcamButton.onclick = async () => {
+            try {
+                localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                remoteStream = new MediaStream();
+
+                localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
+                pc.ontrack = (event) => event.streams[0].getTracks().forEach((track) => remoteStream.addTrack(track));
+
+                webcamVideo.srcObject = localStream;
+                remoteVideo.srcObject = remoteStream;
+
+                callButton.disabled = false;
+                answerButton.disabled = false;
+                webcamButton.disabled = true;
+            } catch (e) {
+                console.error("Error accessing media devices.", e);
+                alert("Could not access camera/mic. Make sure you are on HTTPS!");
+            }
+        };
+
+        // --- STEP 2: Create Call ---
+        callButton.onclick = async () => {
+            const callDoc = doc(collection(firestore, 'calls'));
+            const offerCandidates = collection(callDoc, 'offerCandidates');
+            const answerCandidates = collection(callDoc, 'answerCandidates');
+
+            callInput.value = callDoc.id; // The random code
+
+            pc.onicecandidate = (event) => {
+                event.candidate && addDoc(offerCandidates, event.candidate.toJSON());
+            };
+
+            const offerDescription = await pc.createOffer();
+            await pc.setLocalDescription(offerDescription);
+            await setDoc(callDoc, { offer: { sdp: offerDescription.sdp, type: offerDescription.type } });
+
+            onSnapshot(callDoc, (snapshot) => {
+                const data = snapshot.data();
+                if (!pc.currentRemoteDescription && data?.answer) {
+                    pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+                }
+            });
+
+            onSnapshot(answerCandidates, (snapshot) => {
+                snapshot.docChanges().forEach((change) => {
+                    if (change.type === 'added') pc.addIceCandidate(new RTCIceCandidate(change.doc.data()));
+                });
+            });
+        };
+
+        // --- STEP 3: Join Call ---
+        answerButton.onclick = async () => {
+            const callId = joinInput.value;
+            const callDoc = doc(firestore, 'calls', callId);
+            const answerCandidates = collection(callDoc, 'answerCandidates');
+            const offerCandidates = collection(callDoc, 'offerCandidates');
+
+            pc.onicecandidate = (event) => {
+                event.candidate && addDoc(answerCandidates, event.candidate.toJSON());
+            };
+
+            const callData = (await getDoc(callDoc)).data();
+            await pc.setRemoteDescription(new RTCSessionDescription(callData.offer));
+
+            const answerDescription = await pc.createAnswer();
+            await pc.setLocalDescription(answerDescription);
+            await updateDoc(callDoc, { answer: { type: answerDescription.type, sdp: answerDescription.sdp } });
+
+            onSnapshot(offerCandidates, (snapshot) => {
+                snapshot.docChanges().forEach((change) => {
+                    if (change.type === 'added') pc.addIceCandidate(new RTCIceCandidate(change.doc.data()));
+                });
+            });
+        };
+    </script>
+</body>
+</html>
